@@ -193,23 +193,24 @@ export async function getBalance(
   }
 
   // Fallback: platform API with Bearer Token
-  try {
-    const url = 'https://platform.deepseek.com/api/v0/user/balance';
-    const raw = await httpGet(url, {
-      ...BROWSER_HEADERS,
-      authorization: `Bearer ${bearerToken}`,
-    });
-    const data = JSON.parse(raw);
-    if (data.is_available && data.balance_infos?.length) {
-      const info = data.balance_infos[0];
-      return {
-        total: parseFloat(info.total_balance || '0'),
-        granted: parseFloat(info.granted_balance || '0'),
-        topped_up: parseFloat(info.topped_up_balance || '0'),
-      };
+  for (const url of [DEEPSEEK_BALANCE_URL, 'https://platform.deepseek.com/api/v0/billing/balance']) {
+    try {
+      const raw = await httpGet(url, {
+        ...BROWSER_HEADERS,
+        authorization: `Bearer ${bearerToken}`,
+      });
+      const data = JSON.parse(raw);
+      if (data.is_available && data.balance_infos?.length) {
+        const info = data.balance_infos[0];
+        return {
+          total: parseFloat(info.total_balance || '0'),
+          granted: parseFloat(info.granted_balance || '0'),
+          topped_up: parseFloat(info.topped_up_balance || '0'),
+        };
+      }
+    } catch {
+      // Try next URL
     }
-  } catch {
-    // Give up
   }
 
   return null;
