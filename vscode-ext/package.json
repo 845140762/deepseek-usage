@@ -1,0 +1,71 @@
+{
+  "name": "deepseek-usage",
+  "displayName": "DeepSeek Usage",
+  "description": "DeepSeek API 用量实时监控 — 余额、缓存命中率、7天用量趋势",
+  "version": "0.1.0",
+  "publisher": "your-publisher-id",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": ["deepseek", "api", "usage", "monitor"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseekUsage.showPanel",
+        "title": "DeepSeek: 显示用量面板"
+      },
+      {
+        "command": "deepseekUsage.refresh",
+        "title": "DeepSeek: 刷新数据"
+      },
+      {
+        "command": "deepseekUsage.configure",
+        "title": "DeepSeek: 配置 API Token"
+      }
+    ],
+    "configuration": {
+      "title": "DeepSeek Usage",
+      "properties": {
+        "deepseekUsage.bearerToken": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek platform Bearer Token"
+        },
+        "deepseekUsage.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "DeepSeek API Key (sk-xxx)"
+        },
+        "deepseekUsage.cfClearance": {
+          "type": "string",
+          "default": "",
+          "description": "Cloudflare cf_clearance cookie"
+        },
+        "deepseekUsage.refreshInterval": {
+          "type": "number",
+          "default": 300000,
+          "description": "自动刷新间隔（毫秒）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}
