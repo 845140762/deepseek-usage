@@ -3,8 +3,12 @@
   "displayName": "DeepSeek Usage",
   "description": "DeepSeek API 用量实时监控 — 余额、缓存命中率、7天用量趋势",
   "version": "0.1.0",
-  "publisher": "your-publisher-id",
+  "publisher": "deepseek-usage",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/845140762/deepseek-usage.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
