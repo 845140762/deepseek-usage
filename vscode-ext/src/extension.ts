@@ -34,7 +34,7 @@ async function refreshData() {
   try {
     const [history, balance] = await Promise.all([
       fetchUsageHistory(cfg.bearerToken, cfg.cfClearance).catch(() => [] as UsageDay[]),
-      getBalance(cfg.bearerToken, cfg.apiKey),
+      getBalance(cfg.bearerToken, cfg.apiKey).catch(() => null as BalanceInfo | null),
     ]);
 
     latestHistory = history;
@@ -69,7 +69,7 @@ async function refreshData() {
   } catch (err: any) {
     statusBarItem.text = '$(warning) DeepSeek: 获取失败';
     statusBarItem.command = 'deepseekUsage.showPanel';
-    console.error('DeepSeek refresh error:', err.message);
+    console.error('DeepSeek refresh error:', String(err));
   }
 }
 
