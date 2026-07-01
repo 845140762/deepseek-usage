@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { UsageDay, BalanceInfo } from '../api';
-import * as path from 'path';
 
 export class UsagePanel {
   private static instance: UsagePanel | undefined;
@@ -74,7 +73,7 @@ export class UsagePanel {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; script-src ${csp};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; script-src ${csp} 'unsafe-inline';">
   <title>DeepSeek 用量</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
