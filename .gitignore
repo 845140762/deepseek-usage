@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Build
+build/
+dist/
+*.spec
+
+# Config (contains real tokens)
+deepseek_config.txt
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/settings.json
+
+# VS Code extension
+vscode-ext/node_modules/
+vscode-ext/out/
+vscode-ext/*.vsix
