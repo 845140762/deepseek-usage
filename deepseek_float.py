@@ -3,6 +3,7 @@ import json
 import requests
 import os
 import base64
+import math
 import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -10,11 +11,12 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QInputDialog, QLineEdit, QMessageBox)
 from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
-from PyQt5.QtGui import QColor, QPainter, QBrush, QPen, QFont, QLinearGradient
+from PyQt5.QtGui import QColor, QPainter, QPainterPath, QBrush, QPen, QFont, QLinearGradient, QRadialGradient
 
 # ==================== 配置 ====================
 DEEPSEEK_USAGE_URL = "https://platform.deepseek.com/api/v0/usage/amount"
 DEEPSEEK_BALANCE_URL = "https://platform.deepseek.com/api/v0/user/balance"
+INVOICE_URL = "https://platform.deepseek.com/auth-api/v0/users/get_all_invoice"
 REFRESH_INTERVAL = 300000  # 5分钟
 CONFIG_FILE = "deepseek_config.txt"
 LOG_FILE = "deepseek_float.log"
@@ -316,17 +318,29 @@ class FloatingBall(QWidget):
         self.detail_panel = DetailPanel(self)
         self.detail_panel.hide()
 
-        self.label = QLabel(self)
-        self.label.setAlignment(Qt.AlignCenter)
-        self.label.setWordWrap(True)
-        self.label.setStyleSheet("color: white; font-weight: bold; font-size: 11px; background: transparent;")
-        self.label.setGeometry(0, 20, 80, 40)
+        # 水波动画状态
+        self.wave_phase = 0.0
+        self.water_pct = 0.0
+        self.total_recharged = 0.0
+
+        # 双击刷新动画
+        self._anim_state = "idle"  # idle | filling | emptying | settling
+        self._anim_display_pct = 0.0
+
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self._animate_wave)
+        self.animation_timer.start(50)  # 20fps 水波动画
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(REFRESH_INTERVAL)
 
         self.update_data()
+
+        # 单击/双击区分（双击触发刷新动画，单击切换面板）
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.timeout.connect(self._on_single_click)
 
         self._dragging = False
         self._press_pos = QPoint()
@@ -546,21 +560,44 @@ class FloatingBall(QWidget):
         total = total_hit + total_miss
         return (total_hit / total * 100) if total > 0 else 0.0
 
+    def _fetch_total_recharged(self):
+        """从 get_all_invoice 获取总充值金额（SUCCESS 状态的订单累加）作为瓶子容量"""
+        try:
+            log.info("[总量] 开始拉取充值记录...")
+            resp = requests.get(INVOICE_URL, headers=self._build_headers(), cookies=BROWSER_COOKIES, timeout=10)
+            log.info(f"[总量] HTTP {resp.status_code}")
+            if resp.status_code != 200:
+                log.info(f"[总量] HTTP 失败: {resp.text[:200]}")
+                return 0.0
+            data = resp.json()
+            if data.get("code") != 0:
+                log.info(f"[总量] 接口错误: {data.get('msg', '')}")
+                return 0.0
+            orders = data["data"]["biz_data"]["invoices"]["payment_orders"]
+            total = sum(float(o["amount"]) for o in orders if o.get("payment_order_status") == "SUCCESS")
+            log.info(f"[总量] 总充值: {total:.2f} CNY")
+            return total
+        except Exception as e:
+            log.exception(f"[总量] 请求异常: {e}")
+            return 0.0
+
     def update_data(self):
         log.info("=" * 40)
         log.info(f"[更新] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} 开始刷新数据...")
         self.usage_history = self._fetch_usage_history()
         self.model_totals = self._build_model_totals(self.usage_history)
         self.balance = self.get_balance()
+        self.total_recharged = self._fetch_total_recharged()
+        if self.balance and self.total_recharged > 0:
+            self.water_pct = min(100.0, self.balance["total"] / self.total_recharged * 100)
+        else:
+            self.water_pct = 0.0
         self.hit_rate = self.get_cache_hit_rate()
 
         if self.balance:
-            text = f"💰 {self.balance['total']:.1f}\n📊 {self.hit_rate:.1f}%"
             log.info(f"[更新] 余额={self.balance['total']:.2f}, 命中率={self.hit_rate:.1f}%")
         else:
-            text = "💰 --\n📊 --%"
             log.info(f"[更新] 余额获取失败, 命中率={self.hit_rate:.1f}%")
-        self.label.setText(text)
 
         self.detail_panel.update_display(
             self.balance,
@@ -570,20 +607,189 @@ class FloatingBall(QWidget):
         )
         log.info(f"[更新] 完成，共 {len(self.usage_history)} 天用量数据")
 
+    def _start_refresh_animation(self):
+        """双击刷新：动画灌满→倒空→升到真实水位"""
+        if self._anim_state != "idle":
+            return  # 动画进行中不重复触发
+        self._anim_state = "filling"
+        self._anim_display_pct = self.water_pct  # 从当前水位开始
+        log.info("[动画] 开始刷新动画")
+        # 异步拉取数据（不阻塞动画）
+        QTimer.singleShot(0, self._fetch_data_async)
+
+    def _fetch_data_async(self):
+        """后台拉取最新数据"""
+        try:
+            self.usage_history = self._fetch_usage_history()
+            self.model_totals = self._build_model_totals(self.usage_history)
+            self.balance = self.get_balance()
+            self.total_recharged = self._fetch_total_recharged()
+            if self.balance and self.total_recharged > 0:
+                self.water_pct = min(100.0, self.balance["total"] / self.total_recharged * 100)
+            else:
+                self.water_pct = 0.0
+            self.hit_rate = self.get_cache_hit_rate()
+            log.info(f"[动画] 数据已就绪, 目标水位={self.water_pct:.1f}%")
+        except Exception as e:
+            log.exception(f"[动画] 数据拉取异常: {e}")
+
+    def _animate_wave(self):
+        self.wave_phase += 0.15
+        if self.wave_phase > 6.28 * 10:
+            self.wave_phase -= 6.28 * 10
+
+        if self._anim_state == "filling":
+            self._anim_display_pct += 3.0
+            if self._anim_display_pct >= 100.0:
+                self._anim_display_pct = 100.0
+                self._anim_state = "emptying"
+                log.info("[动画] 灌满→开始倒空")
+        elif self._anim_state == "emptying":
+            self._anim_display_pct -= 2.0
+            if self._anim_display_pct <= 0.0:
+                self._anim_display_pct = 0.0
+                self._anim_state = "settling"
+                log.info(f"[动画] 倒空→升到目标水位({self.water_pct:.1f}%)")
+        elif self._anim_state == "settling":
+            self._anim_display_pct += 1.5
+            if self._anim_display_pct >= self.water_pct:
+                self._anim_display_pct = self.water_pct
+                self._anim_state = "idle"
+                log.info("[动画] 刷新完成")
+
+        self.update()  # 触发重绘
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        gradient = QLinearGradient(0, 0, 80, 80)
-        gradient.setColorAt(0, QColor(60, 100, 200))
-        gradient.setColorAt(1, QColor(30, 50, 120))
-        painter.setBrush(QBrush(gradient))
-        painter.setPen(QPen(QColor(200, 200, 255, 100), 1))
-        painter.drawEllipse(0, 0, 80, 80)
+        R = 40  # radius
+        cx, cy = 40, 40  # center
 
+        # ---- 裁剪到圆形 ----
+        clip_path = QPainterPath()
+        clip_path.addEllipse(cx - R, cy - R, R * 2, R * 2)
+        painter.setClipPath(clip_path)
+
+        # ---- 1. 背景球体 ----
+        bg_grad = QRadialGradient(cx, cy, R, cx - 8, cy - 8)
+        bg_grad.setColorAt(0, QColor(30, 40, 60))
+        bg_grad.setColorAt(1, QColor(10, 15, 25))
+        painter.fillRect(0, 0, 80, 80, QBrush(bg_grad))
+
+        # ---- 2. 水体积（带波浪顶） ----
+        is_animating = self._anim_state != "idle"
+        if is_animating:
+            pct = self._anim_display_pct
+        elif self.balance and self.total_recharged > 0:
+            pct = self.water_pct
+        else:
+            pct = 100.0  # 数据不可用时显示满水
+
+        # 水位基准 y（底部 = 80, 顶部 = 0）
+        water_top = 80 - (pct / 100.0) * 76  # 留 4px 底部边距
+
+        # 颜色映射
+        if pct < 30:
+            ratio = pct / 30.0
+            r1, g1, b1 = 255, 68, 68    # #FF4444
+            r2, g2, b2 = 204, 0, 0      # #CC0000
+        elif pct < 70:
+            ratio = (pct - 30) / 40.0
+            r1, g1, b1 = 255, 170, 0    # #FFAA00
+            r2, g2, b2 = 255, 136, 0    # #FF8800
+        else:
+            ratio = (pct - 70) / 30.0
+            r1, g1, b1 = 0, 204, 136    # #00CC88
+            r2, g2, b2 = 0, 153, 102    # #009966
+
+        def lerp_color(r1, g1, b1, r2, g2, b2, t):
+            return QColor(int(r1 + (r2 - r1) * t), int(g1 + (g2 - g1) * t), int(b1 + (b2 - b1) * t))
+
+        top_color = lerp_color(r1, g1, b1, r2, g2, b2, ratio * 0.3)
+        bottom_color = lerp_color(r1, g1, b1, r2, g2, b2, 0.5 + ratio * 0.5)
+
+        # 构建波浪水面
+        water_path = QPainterPath()
+        wave_path = QPainterPath()  # 用于描边
+
+        base_y = min(water_top, 78)  # clamp
+        amp = 3.0
+        freq = 6.28 / 40.0  # wavelength=40
+
+        water_path.moveTo(0, 80)
+        water_path.lineTo(0, base_y + amp)
+
+        wave_path.moveTo(0, base_y + amp * math.sin(0 * freq + self.wave_phase))
+
+        for x in range(1, 80):
+            y1 = base_y + amp * math.sin(x * freq + self.wave_phase)
+            y2 = base_y + amp * math.sin(x * freq + self.wave_phase + 1.5)  # 第二层波偏移
+            # 用两层波中较高的那个（即数值较小，因为 y 向下增长）
+            wave_y = min(y1, y2)
+            water_path.lineTo(x, wave_y)
+            wave_path.lineTo(x, wave_y)
+
+        water_path.lineTo(80, 80)
+        water_path.closeSubpath()
+
+        # 水体积渐变填充
+        water_grad = QLinearGradient(0, base_y, 0, 80)
+        water_grad.setColorAt(0, top_color)
+        water_grad.setColorAt(1, bottom_color)
+        painter.fillPath(water_path, QBrush(water_grad))
+
+        # ---- 3. 水面波浪线 ----
+        painter.setPen(QPen(QColor(255, 255, 255, 100), 1.5))
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(255, 255, 255, 50), 2))
-        painter.drawEllipse(5, 5, 70, 70)
+        painter.drawPath(wave_path)
+
+        # ---- 4. 玻璃瓶外壁（圆边框） ----
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor(255, 255, 255, 90), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(cx - R + 1, cy - R + 1, R * 2 - 2, R * 2 - 2)
+
+        # ---- 5. 玻璃高光反射 ----
+        highlight = QPainterPath()
+        highlight.addEllipse(cx - 14, cy - 14, 18, 14)
+        painter.setClipPath(highlight)
+        hl_grad = QLinearGradient(cx - 14, cy - 14, cx + 4, cy)
+        hl_grad.setColorAt(0, QColor(255, 255, 255, 50))
+        hl_grad.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.fillRect(cx - 16, cy - 16, 24, 18, QBrush(hl_grad))
+        painter.setClipping(False)
+
+        # 次要高光（小光点）
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        painter.setBrush(QBrush(QColor(255, 255, 255, 30)))
+        painter.drawEllipse(cx - 22, cy - 20, 8, 6)
+
+        # ---- 6. 文字 ----
+        painter.setPen(QColor(255, 255, 255))
+        font = QFont("Segoe UI", 10, QFont.Bold)
+        painter.setFont(font)
+
+        if self._anim_state != "idle":
+            # 动画中：显示当前动画水位 + 🔄
+            painter.drawText(0, 20, 80, 18, Qt.AlignCenter, f"{self._anim_display_pct:.0f}%")
+            font2 = QFont("Segoe UI", 9)
+            painter.setFont(font2)
+            painter.setPen(QColor(180, 220, 255))
+            painter.drawText(0, 40, 80, 16, Qt.AlignCenter, "🔄")
+        else:
+            balance_text = f"¥{self.balance['total']:.1f}" if self.balance else "¥--.-"
+            painter.drawText(0, 20, 80, 18, Qt.AlignCenter, balance_text)
+
+            font2 = QFont("Segoe UI", 8)
+            painter.setFont(font2)
+            painter.setPen(QColor(220, 220, 255))
+            pct_text = f"{self.water_pct:.0f}%" if self.balance and self.total_recharged > 0 else "?"
+            painter.drawText(0, 38, 80, 14, Qt.AlignCenter, pct_text)
+
+            hit_text = f"📊{self.hit_rate:.0f}%" if self.hit_rate > 0 else ""
+            painter.drawText(0, 56, 80, 14, Qt.AlignCenter, hit_text)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -607,14 +813,22 @@ class FloatingBall(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             if not self._dragging:
-                # 单击：切换面板
-                if not self.detail_panel.isVisible():
-                    self.detail_panel.show()
-                    self.update_panel_position()
-                else:
-                    self.detail_panel.hide()
+                self._click_timer.start(250)  # 等250ms看是否双击
             self._dragging = False
             event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._click_timer.stop()  # 取消单击动作
+            self._start_refresh_animation()
+
+    def _on_single_click(self):
+        """单击切换详情面板"""
+        if not self.detail_panel.isVisible():
+            self.detail_panel.show()
+            self.update_panel_position()
+        else:
+            self.detail_panel.hide()
 
     def update_panel_position(self):
         pos = self.frameGeometry().topRight()
